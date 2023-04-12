@@ -883,13 +883,8 @@ static int csrgemvreferencedist(
      * a (stable) counting sort */
     int64_t * colptr = malloc((num_columns+1) * sizeof(int64_t));
     if (!colptr) return errno;
-    idx_t * rowidx = NULL;
-    /* idx_t * rowidx = malloc(csrsize * sizeof(idx_t)); */
-    /* if (!rowidx) { free(colptr); return errno; } */
     int64_t * perm = malloc(csrsize * sizeof(int64_t));
-    if (!perm) { free(rowidx); free(colptr); return errno; }
-    int64_t * invperm = malloc(csrsize * sizeof(int64_t));
-    if (!perm) { free(rowidx); free(colptr); return errno; }
+    if (!perm) { free(colptr); return errno; }
 
     /* count the number of nonzeros in each column and offsets to
      * first nonzero in each column */
@@ -910,15 +905,6 @@ static int csrgemvreferencedist(
     for (idx_t i = num_columns; i > 0; i--) colptr[i] = colptr[i-1];
     colptr[0] = 0;
 
-    fprintf(stderr, "perm=[");
-    for (int64_t k = 0; k < csrsize; k++) fprintf(stderr, " %"PRId64, perm[k]);
-    fprintf(stderr, "]\n");
-
-    for (int64_t k = 0; k < csrsize; k++) invperm[perm[k]] = k;
-    fprintf(stderr, "invperm=[");
-    for (int64_t k = 0; k < csrsize; k++) fprintf(stderr, " %"PRId64, invperm[k]);
-    fprintf(stderr, "]\n");
-
     /* use the sorting permutation to compute the reference distance
      * of each nonzero */
     for (int64_t k = 0; k < csrsize-1; k++) {
@@ -928,7 +914,7 @@ static int csrgemvreferencedist(
         else referencedist[perm[k]] = -1;
     }
     if (csrsize > 0) referencedist[csrsize-1] = -1;
-    free(invperm); free(perm); free(rowidx); free(colptr);
+    free(perm); free(colptr);
     return 0;
 }
 
