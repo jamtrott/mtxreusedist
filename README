@@ -1,0 +1,81 @@
+This is the README file for mtxreusedist, a program for computing
+reuse distance and other metrics for data locality in connection with
+sparse matrix-vector multiplication kernels.
+
+  Copyright (C) 2023 James D. Trotter
+
+  Copying and distribution of this file, with or without modification,
+  are permitted in any medium without royalty provided the copyright
+  notice and this notice are preserved.
+
+Building
+--------
+
+The mtxreusedist program can be built with `make'. Compilation and
+linking may be configured through the environment variable `CC', which
+is used to choose a compiler, and `CFLAGS' and `LDFLAGS', which are
+used to set compiler flags and linker flags, respectively. Here is an
+example:
+
+     make CC=gcc CFLAGS="-O3 -march=native"
+
+If support for loading zlib-compressed Matrix Market files is needed,
+then compile with -DHAVE_LIBZ and link to zlib:
+
+     make CC=gcc CFLAGS="-O3 -march=native -DHAVE_LIBZ" LDFLAGS="-lz"
+
+
+Usage
+-----
+
+mtxreusedist is used to load a matrix from a file in Matrix Market
+format (see https://math.nist.gov/MatrixMarket/formats.html), convert
+the sparse matrix to compressed sparse row (CSR) format, and then
+compute reuse distance or similar metrics for a sparse matrix-vector
+multiplication (SpMV) kernel using the given matrix.
+
+Some parts of these computations can use OpenMP for shared-memory
+parallelism. In this case, the environment variable `OMP_NUM_THREADS'
+can be set to control the number of threads that are used. In
+addition, `OMP_PROC_BIND' can be set to bind threads to particular
+cores.
+
+If the option `--verbose' is supplied, then some more information is
+printed, such as how long time is spent loading the matrix and
+computing the reference distance.
+
+Here is an example showing how to compute reference distance for the
+matrix stored in the file test.mtx:
+
+    $ ./mtxreusedist test.mtx
+    3
+    0
+    2
+    3
+    -1
+    -1
+    -1
+    -1
+    -1
+
+The output of the above command consists of one line for every nonzero
+of the sparse matrix. The value printed is the reference distance
+corresponding to each access to the source/input vector in the SpMV
+kernel.
+
+A non-negative value N means that the corresponding source/input
+vector value for that nonzero is accessed again N+1 matrix nonzeros
+later, whereas a value of -1 means the corresponding source/input
+vector value is never reused.
+
+Recall that for rowwise SpMV kernels, such as those based on matrices
+in CSR format, the only irregular memory accesses are to the
+source/input vector. Accesses to the column indices and matrix
+nonzeros are regular and there is no reuse. Thus we are only concerned
+with the reuse of the source/input vector.
+
+
+Copying
+-------
+mtxreusedist is free software. See the file COPYING for copying
+conditions.
