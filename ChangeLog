@@ -1,3 +1,8 @@
+2023-04-13  James D. Trotter  <james@simula.no>
+
+	add options to specify number of vector elements per cache line
+	and to compute histogram directly.
+
 2023-04-12  James D. Trotter  <james@simula.no>
 
         Initial version.

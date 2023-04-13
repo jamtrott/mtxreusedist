@@ -93,10 +93,8 @@ struct program_options
     int gzip;
 #endif
     bool separate_diagonal;
-    bool bandwidth;
-    bool profile;
-    int nblockssize;
-    int * nblocks;
+    int linesize;
+    bool histogram;
     int verbose;
     int quiet;
 };
@@ -112,10 +110,8 @@ static int program_options_init(
     args->gzip = 0;
 #endif
     args->separate_diagonal = false;
-    args->bandwidth = false;
-    args->profile = false;
-    args->nblockssize = 0;
-    args->nblocks = NULL;
+    args->linesize = 0;
+    args->histogram = false;
     args->quiet = 0;
     args->verbose = 0;
     return 0;
@@ -129,7 +125,6 @@ static void program_options_free(
     struct program_options * args)
 {
     if (args->Apath) free(args->Apath);
-    if (args->nblocks) free(args->nblocks);
 }
 
 /**
@@ -159,6 +154,8 @@ static void program_options_print_help(
     fprintf(f, "  -z, --gzip, --gunzip, --ungzip    filter files through gzip\n");
 #endif
     /* fprintf(f, "  --separate-diagonal    store diagonal nonzeros separately\n"); */
+    fprintf(f, "  --line-size N          number of source vector elements per cache line [0]\n");
+    fprintf(f, "  --histogram            output reuse as a histogram\n");
     fprintf(f, "  -q, --quiet            do not print Matrix Market output\n");
     fprintf(f, "  -v, --verbose          be more verbose\n");
     fprintf(f, "\n");
@@ -418,6 +415,24 @@ static int parse_program_options(
             (*nargs)++; argv++; continue;
         }
 #endif
+
+        if (strstr(argv[0], "--line-size") == argv[0]) {
+            int n = strlen("--line-size");
+            const char * s = &argv[0][n];
+            if (*s == '=') { s++; }
+            else if (*s == '\0' && argc-*nargs > 1) { (*nargs)++; argv++; s=argv[0]; }
+            else { program_options_free(args); return EINVAL; }
+            char * t;
+            int N;
+            err = parse_int(&args->linesize, s, &t, NULL);
+            if (err || *t != '\0') { program_options_free(args); return EINVAL; }
+            (*nargs)++; argv++; continue;
+        }
+
+        if (strcmp(argv[0], "--histogram") == 0) {
+            args->histogram = true;
+            (*nargs)++; argv++; continue;
+        }
 
         if (strcmp(argv[0], "-q") == 0 || strcmp(argv[0], "--quiet") == 0) {
             args->quiet = 1;
@@ -872,12 +887,14 @@ static int csr_from_coo(
 }
 
 static int csrgemvreferencedist(
-    int64_t * referencedist,
+    int64_t * reuse,
     idx_t num_rows,
     idx_t num_columns,
     int64_t csrsize,
     const int64_t * __restrict rowptr,
-    const idx_t * __restrict colidx)
+    const idx_t * __restrict colidx,
+    int linesize,
+    bool histogram)
 {
     /* sort nonzeros by their column offsets in ascending order using
      * a (stable) counting sort */
@@ -890,30 +907,75 @@ static int csrgemvreferencedist(
      * first nonzero in each column */
     for (idx_t i = 0; i < num_columns; i++) colptr[i] = 0;
     colptr[num_columns] = 0;
-    for (int64_t k = 0; k < csrsize; k++) colptr[colidx[k]+1]++;
+    if (linesize > 0) {
+        for (int64_t k = 0; k < csrsize; k++) colptr[colidx[k]/linesize+1]++;
+    } else {
+        for (int64_t k = 0; k < csrsize; k++) colptr[colidx[k]+1]++;
+    }
     for (idx_t i = 1; i <= num_columns; i++) colptr[i] += colptr[i-1];
 
     /* find the sorting permutation to place nonzeros in ascending
      * order by column offset */
     for (int64_t k = 0; k < csrsize; k++) perm[k] = 0;
-    for (idx_t i = 0; i < num_rows; i++) {
-        for (int64_t k = rowptr[i]; k < rowptr[i+1]; k++) {
-            idx_t j = colidx[k];
-            perm[colptr[j]++] = k;
+    if (linesize > 0) {
+        for (idx_t i = 0; i < num_rows; i++) {
+            for (int64_t k = rowptr[i]; k < rowptr[i+1]; k++) {
+                idx_t j = colidx[k]/linesize;
+                perm[colptr[j]++] = k;
+            }
+        }
+    } else {
+        for (idx_t i = 0; i < num_rows; i++) {
+            for (int64_t k = rowptr[i]; k < rowptr[i+1]; k++) {
+                idx_t j = colidx[k];
+                perm[colptr[j]++] = k;
+            }
         }
     }
     for (idx_t i = num_columns; i > 0; i--) colptr[i] = colptr[i-1];
     colptr[0] = 0;
 
-    /* use the sorting permutation to compute the reference distance
-     * of each nonzero */
-    for (int64_t k = 0; k < csrsize-1; k++) {
-        idx_t j = colidx[perm[k]];
-        idx_t jp1 = colidx[perm[k+1]];
-        if (j == jp1) referencedist[perm[k]] = perm[k+1]-perm[k]-1;
-        else referencedist[perm[k]] = -1;
+    if (!histogram) {
+        /* use the sorting permutation to compute the reference distance
+         * of each nonzero */
+        if (linesize > 0) {
+            for (int64_t k = 0; k < csrsize-1; k++) {
+                idx_t j = colidx[perm[k]]/linesize;
+                idx_t jp1 = colidx[perm[k+1]]/linesize;
+                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : -1;
+                reuse[perm[k]] = dist;
+            }
+        } else {
+            for (int64_t k = 0; k < csrsize-1; k++) {
+                idx_t j = colidx[perm[k]];
+                idx_t jp1 = colidx[perm[k+1]];
+                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : -1;
+                reuse[perm[k]] = dist;
+            }
+        }
+        if (csrsize > 0) reuse[csrsize-1] = -1;
+    } else {
+        /* use the sorting permutation to compute a histogram of the
+         * reference distances */
+        for (int64_t k = 0; k <= csrsize; k++) reuse[k] = 0;
+        if (linesize > 0) {
+            for (int64_t k = 0; k < csrsize-1; k++) {
+                idx_t j = colidx[perm[k]]/linesize;
+                idx_t jp1 = colidx[perm[k+1]]/linesize;
+                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : csrsize;
+                reuse[dist]++;
+            }
+        } else {
+            for (int64_t k = 0; k < csrsize-1; k++) {
+                idx_t j = colidx[perm[k]];
+                idx_t jp1 = colidx[perm[k+1]];
+                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : csrsize;
+                reuse[dist]++;
+            }
+        }
+        if (csrsize > 0) reuse[csrsize]++;
     }
-    if (csrsize > 0) referencedist[csrsize-1] = -1;
+
     free(perm); free(colptr);
     return 0;
 }
@@ -1138,14 +1200,14 @@ int main(int argc, char *argv[])
         fputc('\n', stderr);
     }
 
-    /* 5. compute reference distance */
+    /* 5. compute reuse/reference distance */
     if (args.verbose > 0) {
-        fprintf(stderr, "computing reference distance:\n");
+        fprintf(stderr, "computing reuse/reference distance:\n");
         clock_gettime(CLOCK_MONOTONIC, &t0);
     }
 
-    int64_t * referencedist = malloc(csrsize * sizeof(int64_t));
-    if (!referencedist) {
+    int64_t * reuse = malloc((csrsize+1) * sizeof(int64_t));
+    if (!reuse) {
         if (args.verbose > 0) fprintf(stderr, "\n");
         fprintf(stderr, "%s: %s\n", program_invocation_short_name, strerror(errno));
         free(csrad); free(csra); free(csrcolidx); free(csrrowptr);
@@ -1155,12 +1217,13 @@ int main(int argc, char *argv[])
     }
 
     err = csrgemvreferencedist(
-        referencedist, num_rows, num_columns,
-        csrsize, csrrowptr, csrcolidx);
+        reuse, num_rows, num_columns,
+        csrsize, csrrowptr, csrcolidx,
+        args.linesize, args.histogram);
     if (err) {
         if (args.verbose > 0) fprintf(stderr, "\n");
         fprintf(stderr, "%s: %s\n", program_invocation_short_name, strerror(err));
-        free(referencedist);
+        free(reuse);
         free(csrad); free(csra); free(csrcolidx); free(csrrowptr);
         program_options_free(&args);
         return EXIT_FAILURE;
@@ -1168,26 +1231,31 @@ int main(int argc, char *argv[])
 
     if (args.verbose > 0) {
         clock_gettime(CLOCK_MONOTONIC, &t1);
-        fprintf(stderr, "done computing reference distance in %'.6f seconds\n", timespec_duration(t0, t1));
+        fprintf(stderr, "done computing reuse/reference distance in %'.6f seconds\n", timespec_duration(t0, t1));
     }
 
     /* 6. write the reference time to standard output */
     if (!args.quiet) {
         if (args.verbose > 0) {
-            fprintf(stderr, "writing reference distance:\n");
+            fprintf(stderr, "writing reuse/reference distance:\n");
             clock_gettime(CLOCK_MONOTONIC, &t0);
         }
 
-        /* fprintf(stdout, "%%%%MatrixMarket vector array integer general\n"); */
-        /* fprintf(stdout, "%"PRId64"\n", csrsize); */
-        for (int64_t k = 0; k < csrsize; k++) fprintf(stdout, "%"PRId64"\n", referencedist[k]);
+        if (args.histogram) {
+            fprintf(stdout, "distance count\n");
+            for (int64_t k = 0; k < csrsize; k++) fprintf(stdout, "%"PRId64" %"PRId64"\n", k, reuse[k]);
+            fprintf(stdout, "∞ %"PRId64"\n", reuse[csrsize]);
+        } else {
+            for (int64_t k = 0; k < csrsize; k++) fprintf(stdout, "%"PRId64"\n", reuse[k]);
+        }
+
         if (args.verbose > 0) {
             clock_gettime(CLOCK_MONOTONIC, &t1);
-            fprintf(stderr, "done writing reference distance in %'.6f seconds\n", timespec_duration(t0, t1));
+            fprintf(stderr, "done writing reuse/reference distance in %'.6f seconds\n", timespec_duration(t0, t1));
         }
     }
 
-    free(referencedist);
+    free(reuse);
     free(csrad); free(csra); free(csrcolidx); free(csrrowptr);
     program_options_free(&args);
     return EXIT_SUCCESS;
