@@ -886,7 +886,8 @@ static int csr_from_coo(
     return 0;
 }
 
-static int csrgemvreferencedist(
+static int csrgemvreuse(
+    int64_t reusesize,
     int64_t * reuse,
     idx_t num_rows,
     idx_t num_columns,
@@ -939,13 +940,15 @@ static int csrgemvreferencedist(
         /* use the sorting permutation to compute the reference distance
          * of each nonzero */
         if (linesize > 0) {
+            if (reusesize < (csrsize+linesize-1)/linesize) return EINVAL;
             for (int64_t k = 0; k < csrsize-1; k++) {
                 idx_t j = colidx[perm[k]]/linesize;
                 idx_t jp1 = colidx[perm[k+1]]/linesize;
-                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : -1;
+                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1)/linesize : -1;
                 reuse[perm[k]] = dist;
             }
         } else {
+            if (reusesize < csrsize) return EINVAL;
             for (int64_t k = 0; k < csrsize-1; k++) {
                 idx_t j = colidx[perm[k]];
                 idx_t jp1 = colidx[perm[k+1]];
@@ -957,23 +960,25 @@ static int csrgemvreferencedist(
     } else {
         /* use the sorting permutation to compute a histogram of the
          * reference distances */
-        for (int64_t k = 0; k <= csrsize; k++) reuse[k] = 0;
+        for (int64_t k = 0; k < reusesize; k++) reuse[k] = 0;
         if (linesize > 0) {
+            if (reusesize < (csrsize+linesize-1)/linesize+1) return EINVAL;
             for (int64_t k = 0; k < csrsize-1; k++) {
                 idx_t j = colidx[perm[k]]/linesize;
                 idx_t jp1 = colidx[perm[k+1]]/linesize;
-                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : csrsize;
+                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1)/linesize : reusesize-1;
                 reuse[dist]++;
             }
         } else {
+            if (reusesize < csrsize+1) return EINVAL;
             for (int64_t k = 0; k < csrsize-1; k++) {
                 idx_t j = colidx[perm[k]];
                 idx_t jp1 = colidx[perm[k+1]];
-                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : csrsize;
+                int64_t dist = j == jp1 ? (perm[k+1]-perm[k]-1) : reusesize-1;
                 reuse[dist]++;
             }
         }
-        if (csrsize > 0) reuse[csrsize]++;
+        if (csrsize > 0) reuse[reusesize-1]++;
     }
 
     free(perm); free(colptr);
@@ -1206,7 +1211,10 @@ int main(int argc, char *argv[])
         clock_gettime(CLOCK_MONOTONIC, &t0);
     }
 
-    int64_t * reuse = malloc((csrsize+1) * sizeof(int64_t));
+    int linesize = args.linesize;
+    int64_t reusesize = linesize > 0 ? (csrsize+linesize-1)/linesize : csrsize;
+    if (args.histogram) reusesize++;
+    int64_t * reuse = malloc(reusesize * sizeof(int64_t));
     if (!reuse) {
         if (args.verbose > 0) fprintf(stderr, "\n");
         fprintf(stderr, "%s: %s\n", program_invocation_short_name, strerror(errno));
@@ -1216,10 +1224,10 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    err = csrgemvreferencedist(
-        reuse, num_rows, num_columns,
+    err = csrgemvreuse(
+        reusesize, reuse, num_rows, num_columns,
         csrsize, csrrowptr, csrcolidx,
-        args.linesize, args.histogram);
+        linesize, args.histogram);
     if (err) {
         if (args.verbose > 0) fprintf(stderr, "\n");
         fprintf(stderr, "%s: %s\n", program_invocation_short_name, strerror(err));
@@ -1243,10 +1251,10 @@ int main(int argc, char *argv[])
 
         if (args.histogram) {
             fprintf(stdout, "distance count\n");
-            for (int64_t k = 0; k < csrsize; k++) fprintf(stdout, "%"PRId64" %"PRId64"\n", k, reuse[k]);
-            fprintf(stdout, "∞ %"PRId64"\n", reuse[csrsize]);
+            for (int64_t k = 0; k < reusesize-1; k++) fprintf(stdout, "%"PRId64" %"PRId64"\n", k, reuse[k]);
+            fprintf(stdout, "∞ %"PRId64"\n", reuse[reusesize-1]);
         } else {
-            for (int64_t k = 0; k < csrsize; k++) fprintf(stdout, "%"PRId64"\n", reuse[k]);
+            for (int64_t k = 0; k < reusesize; k++) fprintf(stdout, "%"PRId64"\n", reuse[k]);
         }
 
         if (args.verbose > 0) {
