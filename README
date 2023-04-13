@@ -44,35 +44,54 @@ If the option `--verbose' is supplied, then some more information is
 printed, such as how long time is spent loading the matrix and
 computing the reference distance.
 
-Here is an example showing how to compute reference distance for the
-matrix stored in the file test.mtx:
+Here is an example showing how to compute a histogram of the reference
+distance for the HB/1138_bus (https://sparse.tamu.edu/HB/1138_bus)
+from the SuiteSparse Matrix Collection. First, download the matrix in
+Matrix Market file format, and then use the following command:
 
-    $ ./mtxreusedist test.mtx
-    3
-    0
-    2
-    3
-    -1
-    -1
-    -1
-    -1
-    -1
+    $ ./mtxreusedist --histogram --verbose 1138_bus.mtx >1138_bus.txt
+    mtxfile_read: 0.003338 seconds (12.7 MB/s)
+    csr_from_coo: 0.000119 seconds, 1,138 rows, 1,138 columns, 4,054 nonzeros, 2 to 18 nonzeros per row
+    computing reuse/reference distance:
+    done computing reuse/reference distance in 0.000131 seconds
+    writing reuse/reference distance:
+    done writing reuse/reference distance in 0.001446 seconds
 
-The output of the above command consists of one line for every nonzero
-of the sparse matrix. The value printed is the reference distance
-corresponding to each access to the source/input vector in the SpMV
-kernel.
+The standard output is redirected to the file 1138_bus.txt, which now
+contains a histogram of reference distances corresponding to accesses
+to the source/input vector for the SpMV kernel.
 
-A non-negative value N means that the corresponding source/input
-vector value for that nonzero is accessed again N+1 matrix nonzeros
-later, whereas a value of -1 means the corresponding source/input
-vector value is never reused.
+The file consists of two entries for every line, which specify the
+distance in the number of accesses (or in cache lines if the
+`--line-size' option was used) and the number of accesses for that
+particular distance. Here is an example:
 
-Recall that for rowwise SpMV kernels, such as those based on matrices
-in CSR format, the only irregular memory accesses are to the
-source/input vector. Accesses to the column indices and matrix
-nonzeros are regular and there is no reuse. Thus we are only concerned
-with the reuse of the source/input vector.
+    $ head 1138_bus.txt
+    distance count
+    0 2188
+    1 455
+    2 275
+    3 180
+    4 106
+    5 88
+    6 56
+    7 49
+    8 36
+    ...
+
+On the the last line, the distance is '∞', which that the
+corresponding accesses to the source vector never experience reuse.
+
+Note that distances are given in terms of accesses to the source
+vector only. Recall that for rowwise SpMV kernels, such as those based
+on matrices in CSR format, the only irregular memory accesses are to
+the source/input vector. Accesses to column offsets and matrix
+nonzeros are regular and they are never reused (at least within a
+single SpMV iteration). Thus we are only concerned with the reuse of
+the source/input vector.
+
+The gnuplot script 1138_bus.gnu gives an example of how to use gnuplot
+to visualise the reference distance histogram.
 
 
 Copying
